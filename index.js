@@ -1,5 +1,6 @@
 import 'dotenv/config';
-import { serveHTTP, addonBuilder } from 'stremio-addon-sdk';
+import pkg from 'stremio-addon-sdk';
+const { serveHTTP, addonBuilder } = pkg;
 import axios from 'axios';
 import SrtParser from 'srt-parser-2';
 
