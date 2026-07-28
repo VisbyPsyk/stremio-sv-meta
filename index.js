@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import cors from 'cors';
 import pkg from 'stremio-addon-sdk';
 const { addonBuilder, getRouter } = pkg;
 import axios from 'axios';
@@ -31,13 +32,14 @@ const manifest = {
   behaviorHints: { configurable: false, adult: false, p2p: false }
 };
 
+// FIX 1: Do not encodeURIComponent on the entire ID (preserves tt123456:1:1)
 const buildStremioSubUrl = (base, type, id, extra = {}) => {
   const extraSegments = [];
   if (extra.videoHash) extraSegments.push(`videoHash=${extra.videoHash}`);
   if (extra.videoSize) extraSegments.push(`videoSize=${extra.videoSize}`);
   
   const extraPath = extraSegments.length > 0 ? `/${extraSegments.join('&')}` : '';
-  return `${base}/subtitles/${type}/${encodeURIComponent(id)}${extraPath}.json`;
+  return `${base}/subtitles/${type}/${id}${extraPath}.json`;
 };
 
 const fetchAddonSubs = async (base, type, id, extra = {}) => {
@@ -50,24 +52,28 @@ const fetchAddonSubs = async (base, type, id, extra = {}) => {
   }
 };
 
-const fetchWithHashFallback = async (base, type, fullId, args) => {
-  if (args.videoHash) {
-    const hashedSubs = await fetchAddonSubs(base, type, fullId, {
-      videoHash: args.videoHash,
-      videoSize: args.videoSize
-    });
+const fetchWithHashFallback = async (base, type, fullId, extra = {}) => {
+  if (extra.videoHash) {
+    const hashedSubs = await fetchAddonSubs(base, type, fullId, extra);
     if (hashedSubs.length > 0) return hashedSubs;
   }
   return await fetchAddonSubs(base, type, fullId);
 };
 
 const findBest = (subs, lang) =>
-  subs.filter(s => s.lang === lang || s.lang.startsWith(lang))
+  subs.filter(s => s.lang && (s.lang === lang || s.lang.startsWith(lang)))
     .sort((a, b) => (a.hearingImpaired === b.hearingImpaired ? 0 : a.hearingImpaired ? 1 : -1))[0] || null;
 
 const translateBatchDeepL = async (texts) => {
   const CHUNK_SIZE = 50;
   const results = [];
+  
+  // Detect DeepL Pro vs DeepL Free endpoint based on key
+  const isFreeKey = DEEPL_KEY.endsWith(':fx');
+  const deeplEndpoint = isFreeKey
+    ? 'https://api-free.deepl.com/v2/translate'
+    : 'https://api.deepl.com/v2/translate';
+
   for (let i = 0; i < texts.length; i += CHUNK_SIZE) {
     const chunk = texts.slice(i, i + CHUNK_SIZE);
     const params = new URLSearchParams();
@@ -75,7 +81,7 @@ const translateBatchDeepL = async (texts) => {
     params.append('target_lang', 'SV');
     params.append('source_lang', 'EN');
     
-    const { data } = await axios.post('https://api-free.deepl.com/v2/translate', params, {
+    const { data } = await axios.post(deeplEndpoint, params, {
       headers: { Authorization: `DeepL-Auth-Key ${DEEPL_KEY}` },
       timeout: 15000
     });
@@ -129,7 +135,7 @@ const translateSubtitle = async (engSub, fileId) => {
 
     let tIdx = 0;
     const newSubs = subs.map((s, i) => 
-      validIdx.includes(i) ? { ...s, text: translated[tIdx++] } : s
+      validIdx.includes(i) ? { ...s, text: translated[tIdx++] || s.text } : s
     );
 
     const sweSrt = parser.toSrt(newSubs);
@@ -147,10 +153,12 @@ const builder = new addonBuilder(manifest);
 builder.defineSubtitlesHandler(async (args) => {
   try {
     const fullId = args.id;
+    // FIX 2: Extra properties like videoHash are inside args.extra
+    const extra = args.extra || {};
 
     const [scsSubs, osSubs] = await Promise.all([
-      fetchWithHashFallback(SCS_ADDON, args.type, fullId, args),
-      fetchWithHashFallback(OS_ADDON, args.type, fullId, args)
+      fetchWithHashFallback(SCS_ADDON, args.type, fullId, extra),
+      fetchWithHashFallback(OS_ADDON, args.type, fullId, extra)
     ]);
 
     const allSubs = [...scsSubs, ...osSubs];
@@ -162,7 +170,8 @@ builder.defineSubtitlesHandler(async (args) => {
         subtitles: [{ 
           id: `native-sv-${fullId}`, 
           url: nativeSv.url, 
-          lang: 'sv', 
+          // FIX 4: Use ISO 639-2 3-letter code ('swe')
+          lang: 'swe', 
           filename: nativeSv.filename, 
           hearingImpaired: nativeSv.hearingImpaired 
         }] 
@@ -181,7 +190,8 @@ builder.defineSubtitlesHandler(async (args) => {
       subtitles: [{ 
         id: `ai-sv-${fullId}`, 
         url: httpSubUrl, 
-        lang: 'sv', 
+        // FIX 4: Use ISO 639-2 3-letter code ('swe')
+        lang: 'swe', 
         filename: `SV_AI_${engSub.filename || 'sub.srt'}`, 
         hearingImpaired: engSub.hearingImpaired 
       }] 
@@ -193,6 +203,9 @@ builder.defineSubtitlesHandler(async (args) => {
 });
 
 const app = express();
+
+// FIX 3: Enable CORS so Stremio web players can fetch custom endpoints
+app.use(cors());
 
 app.get('/health', (_, res) => res.send('OK'));
 
