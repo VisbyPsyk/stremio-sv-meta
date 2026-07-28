@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { serveHTTP, addonBuilder } from 'stremio-addon-sdk';
 import axios from 'axios';
-import { parseSrt, stringifySrt } from 'srt-parser-2';
+import SrtParser from 'srt-parser-2';
 
 const PORT = process.env.PORT || 7000;
 const DEEPL_KEY = process.env.DEEPL_API_KEY;
@@ -68,7 +68,7 @@ const translateSubtitle = async (engSub) => {
   try {
     const { data: content } = await axios.get(engSub.url, { responseType: 'text', timeout: 15000 });
     const isVTT = engSub.url.endsWith('.vtt') || content.startsWith('WEBVTT');
-    const parser = new parseSrt();
+    const parser = new SrtParser();
     const subs = parser.fromSrt(isVTT ? content.replace(/^WEBVTT\n\n/, '') : content);
     if (!subs.length) return null;
     const texts = subs.map(s => s.text.replace(/\n/g, ' ').trim());
@@ -77,7 +77,7 @@ const translateSubtitle = async (engSub) => {
     const translated = await translateText(toTranslate);
     let tIdx = 0;
     const newSubs = subs.map((s, i) => validIdx.includes(i) ? { ...s, text: translated[tIdx++] } : s);
-    const sweSrt = stringifySrt(newSubs);
+    const sweSrt = parser.toSrt(newSubs);
     const dataUri = `data:application/x-subrip;base64,${Buffer.from(sweSrt).toString('base64')}`;
     CACHE.set(cacheKey, dataUri);
     return dataUri;
@@ -98,14 +98,14 @@ builder.defineSubtitlesHandler(async (args) => {
   const nativeSv = findBest(allSubs, 'swe') || findBest(allSubs, 'sv');
   if (nativeSv) {
     console.log(`[OK] Native SV: ${nativeSv.filename}`);
-    return { subtitles: [{ id: `native-sv-${imdbId}`, url: nativeSv.url, lang: 'Swedish', filename: nativeSv.filename, hearingImpaired: nativeSv.hearingImpaired }] };
+    return { subtitles: [{ id: `native-sv-${imdbId}`, url: nativeSv.url, lang: 'sv', filename: nativeSv.filename, hearingImpaired: nativeSv.hearingImpaired }] };
   }
   const engSub = findBest(allSubs, 'eng') || findBest(allSubs, 'en');
   if (!engSub) return { subtitles: [] };
   console.log(`[AI] Translating: ${engSub.filename}`);
   const dataUri = await translateSubtitle(engSub);
   if (!dataUri) return { subtitles: [] };
-  return { subtitles: [{ id: `ai-sv-${imdbId}-${Date.now()}`, url: dataUri, lang: 'Swedish (AI)', filename: `SV_AI_${engSub.filename}` }] });
+  return { subtitles: [{ id: `ai-sv-${imdbId}-${Date.now()}`, url: dataUri, lang: 'sv', filename: `SV_AI_${engSub.filename}`, hearingImpaired: engSub.hearingImpaired }] };
 });
 
 const app = builder.getInterface();
