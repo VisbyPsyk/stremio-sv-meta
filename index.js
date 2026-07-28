@@ -31,8 +31,6 @@ const manifest = {
   behaviorHints: { configurable: false, adult: false, p2p: false }
 };
 
-const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
-
 const buildStremioSubUrl = (base, type, id, extra = {}) => {
   const extraSegments = [];
   if (extra.videoHash) extraSegments.push(`videoHash=${extra.videoHash}`);
@@ -198,4 +196,20 @@ const app = express();
 
 app.get('/health', (_, res) => res.send('OK'));
 
-app.get(
+// Serve translated subtitles from the cache
+app.get('/subtitles/translated/:fileId.srt', (req, res) => {
+  const { fileId } = req.params;
+  if (TRANSLATED_CACHE.has(fileId)) {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    return res.send(TRANSLATED_CACHE.get(fileId));
+  }
+  res.status(404).send('Subtitle not found or expired.');
+});
+
+// Mount Stremio router
+app.use(getRouter(builder.getInterface()));
+
+app.listen(PORT, () => {
+  console.log(`Add-on active on port ${PORT}`);
+  console.log(`Host URL: ${HOST_URL}`);
+});
