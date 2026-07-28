@@ -20,6 +20,7 @@ const AZURE_REGION = process.env.AZURE_TRANSLATOR_REGION;
 const MYMEMORY_EMAIL = process.env.MYMEMORY_EMAIL;
 const OS_ADDON = 'https://opensubtitles.strem.io';
 const SCS_ADDON = 'https://community-subtitles.strem.io';
+const SCS_ALT = process.env.SCS_ALT || null; // optional alternative SCS host
 const CACHE = new Map();
 
 const manifest = {
@@ -35,17 +36,57 @@ const manifest = {
   behaviorHints: { configurable: false, adult: false, p2p: false }
 };
 
-const fetchAddonSubs = async (base, type, id, args) => {
-  try {
-    const url = `${base}/subtitles/${type}/${encodeURIComponent(id)}.json`;
-    const { data } = await axios.get(url, { params: { videoHash: args.videoHash, videoSize: args.videoSize }, timeout: 8000 });
-    return data.subtitles || [];
-  } catch (err) { console.warn('fetchAddonSubs error', err && err.message); return []; }
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+const fetchWithRetries = async (url, opts = {}, attempts = 3) => {
+  let lastErr = null;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      console.debug(`fetchWithRetries attempt ${i} -> ${url}`);
+      const response = await axios.get(url, { ...opts });
+      return response.data;
+    } catch (err) {
+      lastErr = err;
+      const code = err && err.code;
+      const status = err && err.response && err.response.status;
+      console.warn(`fetchWithRetries error attempt ${i} for ${url}:`, code || status || err.message);
+      // quick backoff
+      await sleep(200 * i);
+      // continue to retry
+    }
+  }
+  // all attempts failed
+  throw lastErr;
 };
 
-const findBest = (subs, lang) => 
+const fetchAddonSubs = async (base, type, id, args) => {
+  const url = `${base}/subtitles/${type}/${encodeURIComponent(id)}.json`;
+  try {
+    const data = await fetchWithRetries(url, { params: { videoHash: args.videoHash, videoSize: args.videoSize }, timeout: 8000 }, 3);
+    return data.subtitles || [];
+  } catch (err) {
+    // Detailed logging for DNS and network failures
+    const code = err && err.code;
+    const status = err && err.response && err.response.status;
+    console.warn(`fetchAddonSubs failed for ${base} (${url}) — code:${code || 'N/A'} status:${status || 'N/A'} message:${err && err.message}`);
+    // If this was the primary SCS and there's an alt configured, try the alt once
+    if (base === SCS_ADDON && SCS_ALT) {
+      const altUrl = `${SCS_ALT}/subtitles/${type}/${encodeURIComponent(id)}.json`;
+      try {
+        console.warn(`Attempting fallback SCS host: ${SCS_ALT}`);
+        const data = await fetchWithRetries(altUrl, { params: { videoHash: args.videoHash, videoSize: args.videoSize }, timeout: 8000 }, 2);
+        return data.subtitles || [];
+      } catch (altErr) {
+        console.warn(`Fallback SCS host failed: ${SCS_ALT} — ${altErr && altErr.message}`);
+      }
+    }
+    return [];
+  }
+};
+
+const findBest = (subs, lang) =>
   subs.filter(s => s.lang === lang || s.lang.startsWith(lang))
-      .sort((a, b) => (a.hearingImpaired === b.hearingImpaired ? 0 : a.hearingImpaired ? 1 : -1))[0] || null;
+    .sort((a, b) => (a.hearingImpaired === b.hearingImpaired ? 0 : a.hearingImpaired ? 1 : -1))[0] || null;
 
 const translateText = async (texts, targetLang = 'sv') => {
   // Prefer DeepL if key is provided
@@ -60,7 +101,9 @@ const translateText = async (texts, targetLang = 'sv') => {
         headers: { Authorization: `DeepL-Auth-Key ${DEEPL_KEY}` }, timeout: 30000
       });
       return data.translations.map(t => t.text);
-    } catch (e) { console.warn('DeepL failed, fallback to Azure/MyMemory:', e && e.message); }
+    } catch (e) {
+      console.warn('DeepL failed, fallback to Azure/MyMemory:', e && e.message);
+    }
   }
 
   // Next prefer Azure Translator if key provided
@@ -71,9 +114,10 @@ const translateText = async (texts, targetLang = 'sv') => {
       const headers = { 'Ocp-Apim-Subscription-Key': AZURE_KEY, 'Content-Type': 'application/json' };
       if (AZURE_REGION) headers['Ocp-Apim-Subscription-Region'] = AZURE_REGION;
       const { data } = await axios.post(url, body, { headers, timeout: 30000 });
-      // data is an array matching the input texts
       return data.map(item => (item.translations && item.translations[0] && item.translations[0].text) || '');
-    } catch (e) { console.warn('Azure Translator failed, fallback MyMemory:', e && e.message); }
+    } catch (e) {
+      console.warn('Azure Translator failed, fallback MyMemory:', e && e.message);
+    }
   }
 
   // Fallback: MyMemory (public/free)
@@ -85,7 +129,7 @@ const translateText = async (texts, targetLang = 'sv') => {
       if (MYMEMORY_EMAIL) p.append('de', MYMEMORY_EMAIL);
       const { data } = await axios.get(`https://api.mymemory.translated.net/get?${p}`, { timeout: 15000 });
       results.push(data.responseData?.translatedText || text);
-      await new Promise(r => setTimeout(r, 100));
+      await sleep(100);
     } catch (e) { console.warn('MyMemory fetch failed', e && e.message); results.push(text); }
   }
   return results;
@@ -119,19 +163,27 @@ builder.defineSubtitlesHandler(async (args) => {
   try {
     const imdbId = args.id.split(':')[0];
     console.log(`[Req] ${imdbId} | Hash: ${args.videoHash || 'none'}`);
+
+    // Fetch from both upstreams concurrently but with robust retries and fallbacks
     const [scsSubs, osSubs] = await Promise.all([
-      fetchAddonSubs(SCS_ADDON, args.type, imdbId, args),
-      fetchAddonSubs(OS_ADDON, args.type, imdbId, args)
+      fetchAddonSubs(SCS_ADDON, args.type, imdbId, args).catch(err => { console.warn('SCS subs fetch final failure', err && err.message); return []; }),
+      fetchAddonSubs(OS_ADDON, args.type, imdbId, args).catch(err => { console.warn('OS subs fetch final failure', err && err.message); return []; })
     ]);
+
+    console.log(`[Info] upstream results: scs=${scsSubs.length} os=${osSubs.length}`);
+
     const allSubs = [...scsSubs, ...osSubs];
     if (!allSubs.length) return { subtitles: [] };
+
     const nativeSv = findBest(allSubs, 'swe') || findBest(allSubs, 'sv');
     if (nativeSv) {
       console.log(`[OK] Native SV: ${nativeSv.filename}`);
       return { subtitles: [{ id: `native-sv-${imdbId}`, url: nativeSv.url, lang: 'sv', filename: nativeSv.filename, hearingImpaired: nativeSv.hearingImpaired }] };
     }
+
     const engSub = findBest(allSubs, 'eng') || findBest(allSubs, 'en');
     if (!engSub) return { subtitles: [] };
+
     console.log(`[AI] Translating: ${engSub.filename}`);
     const dataUri = await translateSubtitle(engSub);
     if (!dataUri) return { subtitles: [] };
