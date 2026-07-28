@@ -5,6 +5,8 @@ import SrtParser from 'srt-parser-2';
 
 const PORT = process.env.PORT || 7000;
 const DEEPL_KEY = process.env.DEEPL_API_KEY;
+const AZURE_KEY = process.env.AZURE_TRANSLATOR_KEY;
+const AZURE_REGION = process.env.AZURE_TRANSLATOR_REGION;
 const MYMEMORY_EMAIL = process.env.MYMEMORY_EMAIL;
 const OS_ADDON = 'https://opensubtitles.strem.io';
 const SCS_ADDON = 'https://community-subtitles.strem.io';
@@ -14,7 +16,7 @@ const manifest = {
   id: 'org.stremio.swedish.meta.koyeb',
   version: '1.0.0',
   name: '🇸🇪 Swedish Meta (SCS + OS + AI)',
-  description: 'Native SV (SCS/OS) → Translate EN→SV (DeepL/MyMemory). Hash handled by upstreams.',
+  description: 'Native SV (SCS/OS) → Translate EN→SV (DeepL/Azure/MyMemory). Hash handled by upstreams.',
   logo: 'https://cdn.jsdelivr.net/gh/hakanburok/stremio-addons@main/logos/swedish-flag.png',
   types: ['movie', 'series'],
   idPrefixes: ['tt'],
@@ -35,6 +37,7 @@ const findBest = (subs, lang) =>
       .sort((a, b) => (a.hearingImpaired === b.hearingImpaired ? 0 : a.hearingImpaired ? 1 : -1))[0] || null;
 
 const translateText = async (texts, targetLang = 'sv') => {
+  // Prefer DeepL if key is provided
   if (DEEPL_KEY) {
     try {
       const params = new URLSearchParams();
@@ -46,8 +49,23 @@ const translateText = async (texts, targetLang = 'sv') => {
         headers: { Authorization: `DeepL-Auth-Key ${DEEPL_KEY}` }, timeout: 30000
       });
       return data.translations.map(t => t.text);
-    } catch (e) { console.warn('DeepL failed, fallback MyMemory:', e.message); }
+    } catch (e) { console.warn('DeepL failed, fallback to Azure/MyMemory:', e.message); }
   }
+
+  // Next prefer Azure Translator if key provided
+  if (AZURE_KEY) {
+    try {
+      const url = `https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&to=${encodeURIComponent(targetLang)}`;
+      const body = texts.map(t => ({ Text: t }));
+      const headers = { 'Ocp-Apim-Subscription-Key': AZURE_KEY, 'Content-Type': 'application/json' };
+      if (AZURE_REGION) headers['Ocp-Apim-Subscription-Region'] = AZURE_REGION;
+      const { data } = await axios.post(url, body, { headers, timeout: 30000 });
+      // data is an array matching the input texts
+      return data.map(item => (item.translations && item.translations[0] && item.translations[0].text) || '');
+    } catch (e) { console.warn('Azure Translator failed, fallback MyMemory:', e.message); }
+  }
+
+  // Fallback: MyMemory (public/free)
   const results = [];
   for (const text of texts) {
     if (!text.trim()) { results.push(''); continue; }
