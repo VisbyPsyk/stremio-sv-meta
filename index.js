@@ -1,5 +1,6 @@
 import 'dotenv/config';
-import { serveHTTP, addonBuilder } from 'stremio-addon-sdk';
+import pkg from 'stremio-addon-sdk';
+const { serveHTTP, addonBuilder } = pkg;
 import axios from 'axios';
 import SrtParser from 'srt-parser-2';
 
@@ -115,25 +116,30 @@ const translateSubtitle = async (engSub) => {
 const builder = new addonBuilder(manifest);
 
 builder.defineSubtitlesHandler(async (args) => {
-  const imdbId = args.id.split(':')[0];
-  console.log(`[Req] ${imdbId} | Hash: ${args.videoHash || 'none'}`);
-  const [scsSubs, osSubs] = await Promise.all([
-    fetchAddonSubs(SCS_ADDON, args.type, imdbId, args),
-    fetchAddonSubs(OS_ADDON, args.type, imdbId, args)
-  ]);
-  const allSubs = [...scsSubs, ...osSubs];
-  if (!allSubs.length) return { subtitles: [] };
-  const nativeSv = findBest(allSubs, 'swe') || findBest(allSubs, 'sv');
-  if (nativeSv) {
-    console.log(`[OK] Native SV: ${nativeSv.filename}`);
-    return { subtitles: [{ id: `native-sv-${imdbId}`, url: nativeSv.url, lang: 'sv', filename: nativeSv.filename, hearingImpaired: nativeSv.hearingImpaired }] };
+  try {
+    const imdbId = args.id.split(':')[0];
+    console.log(`[Req] ${imdbId} | Hash: ${args.videoHash || 'none'}`);
+    const [scsSubs, osSubs] = await Promise.all([
+      fetchAddonSubs(SCS_ADDON, args.type, imdbId, args),
+      fetchAddonSubs(OS_ADDON, args.type, imdbId, args)
+    ]);
+    const allSubs = [...scsSubs, ...osSubs];
+    if (!allSubs.length) return { subtitles: [] };
+    const nativeSv = findBest(allSubs, 'swe') || findBest(allSubs, 'sv');
+    if (nativeSv) {
+      console.log(`[OK] Native SV: ${nativeSv.filename}`);
+      return { subtitles: [{ id: `native-sv-${imdbId}`, url: nativeSv.url, lang: 'sv', filename: nativeSv.filename, hearingImpaired: nativeSv.hearingImpaired }] };
+    }
+    const engSub = findBest(allSubs, 'eng') || findBest(allSubs, 'en');
+    if (!engSub) return { subtitles: [] };
+    console.log(`[AI] Translating: ${engSub.filename}`);
+    const dataUri = await translateSubtitle(engSub);
+    if (!dataUri) return { subtitles: [] };
+    return { subtitles: [{ id: `ai-sv-${imdbId}-${Date.now()}`, url: dataUri, lang: 'sv', filename: `SV_AI_${engSub.filename}`, hearingImpaired: engSub.hearingImpaired }] };
+  } catch (err) {
+    console.error('Subtitles handler error:', err && err.stack ? err.stack : err);
+    return { subtitles: [] };
   }
-  const engSub = findBest(allSubs, 'eng') || findBest(allSubs, 'en');
-  if (!engSub) return { subtitles: [] };
-  console.log(`[AI] Translating: ${engSub.filename}`);
-  const dataUri = await translateSubtitle(engSub);
-  if (!dataUri) return { subtitles: [] };
-  return { subtitles: [{ id: `ai-sv-${imdbId}-${Date.now()}`, url: dataUri, lang: 'sv', filename: `SV_AI_${engSub.filename}`, hearingImpaired: engSub.hearingImpaired }] };
 });
 
 const app = builder.getInterface();
