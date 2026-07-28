@@ -21,6 +21,7 @@ const manifest = {
   logo: 'https://cdn.jsdelivr.net/gh/hakanburok/stremio-addons@main/logos/swedish-flag.png',
   types: ['movie', 'series'],
   idPrefixes: ['tt'],
+  catalogs: [],
   resources: ['subtitles'],
   behaviorHints: { configurable: false, adult: false, p2p: false }
 };
