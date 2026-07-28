@@ -1,8 +1,16 @@
 import 'dotenv/config';
-import pkg from 'stremio-addon-sdk';
-const { serveHTTP, addonBuilder } = pkg;
+import { serveHTTP, addonBuilder } from 'stremio-addon-sdk';
 import axios from 'axios';
 import SrtParser from 'srt-parser-2';
+
+// Global error handlers to capture unhandled rejections and exceptions
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('UnhandledPromiseRejection:', { reason, promise }, new Error().stack);
+});
+process.on('uncaughtException', (err) => {
+  console.error('UncaughtException:', err && err.stack ? err.stack : err);
+  process.exit(1);
+});
 
 const PORT = process.env.PORT || 7000;
 const DEEPL_KEY = process.env.DEEPL_API_KEY;
@@ -31,7 +39,7 @@ const fetchAddonSubs = async (base, type, id, args) => {
     const url = `${base}/subtitles/${type}/${encodeURIComponent(id)}.json`;
     const { data } = await axios.get(url, { params: { videoHash: args.videoHash, videoSize: args.videoSize }, timeout: 8000 });
     return data.subtitles || [];
-  } catch { return []; }
+  } catch (err) { console.warn('fetchAddonSubs error', err && err.message); return []; }
 };
 
 const findBest = (subs, lang) => 
@@ -51,7 +59,7 @@ const translateText = async (texts, targetLang = 'sv') => {
         headers: { Authorization: `DeepL-Auth-Key ${DEEPL_KEY}` }, timeout: 30000
       });
       return data.translations.map(t => t.text);
-    } catch (e) { console.warn('DeepL failed, fallback to Azure/MyMemory:', e.message); }
+    } catch (e) { console.warn('DeepL failed, fallback to Azure/MyMemory:', e && e.message); }
   }
 
   // Next prefer Azure Translator if key provided
@@ -64,7 +72,7 @@ const translateText = async (texts, targetLang = 'sv') => {
       const { data } = await axios.post(url, body, { headers, timeout: 30000 });
       // data is an array matching the input texts
       return data.map(item => (item.translations && item.translations[0] && item.translations[0].text) || '');
-    } catch (e) { console.warn('Azure Translator failed, fallback MyMemory:', e.message); }
+    } catch (e) { console.warn('Azure Translator failed, fallback MyMemory:', e && e.message); }
   }
 
   // Fallback: MyMemory (public/free)
@@ -77,7 +85,7 @@ const translateText = async (texts, targetLang = 'sv') => {
       const { data } = await axios.get(`https://api.mymemory.translated.net/get?${p}`, { timeout: 15000 });
       results.push(data.responseData?.translatedText || text);
       await new Promise(r => setTimeout(r, 100));
-    } catch { results.push(text); }
+    } catch (e) { console.warn('MyMemory fetch failed', e && e.message); results.push(text); }
   }
   return results;
 };
@@ -101,7 +109,7 @@ const translateSubtitle = async (engSub) => {
     const dataUri = `data:application/x-subrip;base64,${Buffer.from(sweSrt).toString('base64')}`;
     CACHE.set(cacheKey, dataUri);
     return dataUri;
-  } catch (e) { console.error('Translate error:', e.message); return null; }
+  } catch (e) { console.error('Translate error:', e && e.message); return null; }
 };
 
 const builder = new addonBuilder(manifest);
