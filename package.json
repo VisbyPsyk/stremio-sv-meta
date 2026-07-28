@@ -1,0 +1,13 @@
+{
+  "name": "stremio-sv-meta",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": { "start": "node index.js" },
+  "dependencies": {
+    "stremio-addon-sdk": "^1.6.0",
+    "axios": "^1.7.0",
+    "dotenv": "^16.4.0",
+    "srt-parser-2": "^1.2.3"
+  },
+  "engines": { "node": ">=20" }
+}
