@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
-import pkg, { getRouter } from 'stremio-addon-sdk';
-const { addonBuilder } = pkg;
+import pkg from 'stremio-addon-sdk';
+const { addonBuilder, getRouter } = pkg;
 import axios from 'axios';
 import srtParser2 from 'srt-parser-2';
 
@@ -52,7 +52,6 @@ const fetchAddonSubs = async (base, type, id, extra = {}) => {
   }
 };
 
-// Query upstream with Video Hash first; fallback to IMDb ID if Hash returns nothing
 const fetchWithHashFallback = async (base, type, fullId, args) => {
   if (args.videoHash) {
     const hashedSubs = await fetchAddonSubs(base, type, fullId, {
@@ -61,7 +60,6 @@ const fetchWithHashFallback = async (base, type, fullId, args) => {
     });
     if (hashedSubs.length > 0) return hashedSubs;
   }
-  // Fallback to pure ID lookup (essential for AIOStreams proxied/debrid files)
   return await fetchAddonSubs(base, type, fullId);
 };
 
@@ -150,7 +148,7 @@ const builder = new addonBuilder(manifest);
 
 builder.defineSubtitlesHandler(async (args) => {
   try {
-    const fullId = args.id; // Correct format for TV & Movies (e.g. tt1234567 or tt1234567:1:1)
+    const fullId = args.id;
 
     const [scsSubs, osSubs] = await Promise.all([
       fetchWithHashFallback(SCS_ADDON, args.type, fullId, args),
@@ -160,7 +158,6 @@ builder.defineSubtitlesHandler(async (args) => {
     const allSubs = [...scsSubs, ...osSubs];
     if (!allSubs.length) return { subtitles: [] };
 
-    // Check for native Swedish subtitle
     const nativeSv = findBest(allSubs, 'swe') || findBest(allSubs, 'sv');
     if (nativeSv) {
       return { 
@@ -174,7 +171,6 @@ builder.defineSubtitlesHandler(async (args) => {
       };
     }
 
-    // Fallback to English subtitle and translate to Swedish
     const engSub = findBest(allSubs, 'eng') || findBest(allSubs, 'en');
     if (!engSub) return { subtitles: [] };
 
@@ -202,16 +198,4 @@ const app = express();
 
 app.get('/health', (_, res) => res.send('OK'));
 
-app.get('/subtitles/translated/:id.srt', (req, res) => {
-  const srtContent = TRANSLATED_CACHE.get(req.params.id);
-  if (!srtContent) return res.status(404).send('Not found');
-  res.setHeader('Content-Type', 'application/x-subrip');
-  res.send(srtContent);
-});
-
-const addonInterface = builder.getInterface();
-app.use(getRouter(addonInterface));
-
-app.listen(PORT, () => {
-  console.log(`🚀 Swedish Subtitles Addon running on ${HOST_URL}`);
-});
+app.get(
